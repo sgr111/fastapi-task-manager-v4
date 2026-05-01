@@ -1,0 +1,101 @@
+from fastapi import FastAPI, Request, status
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
+
+from app.api.v1.router import api_router
+from app.core.config import settings
+from app.exceptions import AppException
+
+# Import models so Alembic can detect them
+from app.models import task, user  # noqa: F401
+
+
+def create_app() -> FastAPI:
+    """Create and configure the FastAPI application."""
+    
+    app = FastAPI(
+        title=settings.APP_NAME,
+        version=settings.APP_VERSION,
+        description="Production-grade task management REST API",
+        docs_url="/docs",
+        redoc_url="/redoc",
+    )
+    
+    # ===== MIDDLEWARE =====
+    
+    # CORS middleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.ALLOWED_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    
+    # ===== RATE LIMITING =====
+    
+    limiter = Limiter(key_func=get_remote_address)
+    app.state.limiter = limiter
+    
+    # ===== ERROR HANDLERS =====
+    
+    @app.exception_handler(AppException)
+    async def app_exception_handler(request: Request, exc: AppException):
+        """Handle custom app exceptions."""
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "error": exc.detail,
+                "code": exc.code,
+                "path": str(request.url.path),
+            },
+        )
+    
+    @app.exception_handler(RateLimitExceeded)
+    async def rate_limit_exception_handler(request: Request, exc: RateLimitExceeded):
+        """Handle rate limit exceeded."""
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={
+                "error": "Rate limit exceeded",
+                "code": "RATE_LIMIT_EXCEEDED",
+                "detail": exc.detail,
+            },
+        )
+    
+    # ===== ROUTES =====
+    
+    app.include_router(api_router)
+    
+    # Health check endpoint
+    @app.get("/health", tags=["Health"])
+    def health_check():
+        """Health check endpoint."""
+        return {
+            "status": "ok",
+            "version": settings.APP_VERSION,
+            "environment": settings.ENVIRONMENT,
+        }
+    
+    # ===== STARTUP/SHUTDOWN EVENTS =====
+    
+    @app.on_event("startup")
+    async def startup_event():
+        """Run on application startup."""
+        print(f"🚀 {settings.APP_NAME} v{settings.APP_VERSION} started")
+        print(f"📚 Docs: /docs")
+        print(f"🔗 API: /api/v1")
+    
+    @app.on_event("shutdown")
+    async def shutdown_event():
+        """Run on application shutdown."""
+        print(f"🛑 {settings.APP_NAME} shutting down")
+    
+    return app
+
+
+# Create app instance
+app = create_app()
