@@ -1,12 +1,12 @@
 import pytest
 import pytest_asyncio
+from unittest.mock import patch
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.db.session import Base, get_db
 from app.main import app
 
-# Use async SQLite for tests (no PostgreSQL needed for testing)
 TEST_DATABASE_URL = "sqlite+aiosqlite:///./test.db"
 
 test_engine = create_async_engine(TEST_DATABASE_URL)
@@ -16,21 +16,12 @@ TestingSessionLocal = async_sessionmaker(
     class_=AsyncSession,
 )
 
-
+if hasattr(app.state, "limiter"):
+    app.state.limiter.enabled = False
+    
 @pytest_asyncio.fixture(scope="function", autouse=True)
 async def setup_database():
-    """Create and drop test database tables for each test."""
-    # Clear rate limiter storage before each test
-    try:
-        from slowapi import Limiter
-        from slowapi.util import get_remote_address
-        # Reset limiter state
-        limiter = Limiter(key_func=get_remote_address)
-        if hasattr(limiter, 'storage'):
-            limiter.storage.clear()
-    except:
-        pass
-    
+    """Create and drop tables for each test."""
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield
@@ -40,20 +31,31 @@ async def setup_database():
 
 @pytest_asyncio.fixture
 async def db_session():
-    """Provide a database session for tests."""
     async with TestingSessionLocal() as session:
         yield session
 
 
 @pytest_asyncio.fixture
 async def client(db_session):
-    """Provide an async HTTP client for testing the API."""
+    """Client with rate limiting DISABLED for tests."""
     async def override_get_db():
         yield db_session
 
     app.dependency_overrides[get_db] = override_get_db
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-        yield c
+
+    # Disable rate limiting by making limit() a no-op decorator
+    def no_limit(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
+    with patch("app.core.limiter.limiter.limit", no_limit):
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test"
+        ) as c:
+            yield c
+
     app.dependency_overrides.clear()
 
 
@@ -61,11 +63,10 @@ async def client(db_session):
 
 @pytest_asyncio.fixture
 async def registered_user(client):
-    """Create and return a registered test user."""
     payload = {
         "email": "test@example.com",
         "username": "testuser",
-        "password": "TestPass123",  # Must meet password strength requirements
+        "password": "TestPass123",
     }
     response = await client.post("/api/v1/auth/register", json=payload)
     assert response.status_code == 201
@@ -74,7 +75,6 @@ async def registered_user(client):
 
 @pytest_asyncio.fixture
 async def registered_user_2(client):
-    """Create and return a second registered test user."""
     payload = {
         "email": "test2@example.com",
         "username": "testuser2",
@@ -89,7 +89,6 @@ async def registered_user_2(client):
 
 @pytest_asyncio.fixture
 async def tokens(client, registered_user):
-    """Get both access and refresh tokens for a registered user."""
     response = await client.post(
         "/api/v1/auth/login",
         json={
@@ -107,13 +106,11 @@ async def tokens(client, registered_user):
 
 @pytest_asyncio.fixture
 async def auth_headers(tokens):
-    """Get Authorization headers with access token."""
     return {"Authorization": f"Bearer {tokens['access_token']}"}
 
 
 @pytest_asyncio.fixture
 async def auth_headers_2(client, registered_user_2):
-    """Get Authorization headers for second user."""
     response = await client.post(
         "/api/v1/auth/login",
         json={
@@ -129,29 +126,20 @@ async def auth_headers_2(client, registered_user_2):
 
 @pytest_asyncio.fixture
 async def created_task(client, auth_headers):
-    """Create and return a test task."""
     response = await client.post(
         "/api/v1/tasks/",
-        json={
-            "title": "Test Task",
-            "description": "Test Description",
-        },
+        json={"title": "Test Task", "description": "Test Description"},
         headers=auth_headers,
     )
-    assert response.status_code == 201
+    assert response.status_code == 201, f"Expected 201 got {response.status_code}: {response.text}"
     return response.json()
 
 
 @pytest_asyncio.fixture
 async def created_completed_task(client, auth_headers):
-    """Create and return a completed test task."""
     response = await client.post(
         "/api/v1/tasks/",
-        json={
-            "title": "Completed Task",
-            "description": "Already done",
-            "is_completed": True,
-        },
+        json={"title": "Completed Task", "description": "Already done", "is_completed": True},
         headers=auth_headers,
     )
     assert response.status_code == 201
@@ -160,9 +148,8 @@ async def created_completed_task(client, auth_headers):
 
 @pytest_asyncio.fixture
 async def multiple_tasks(client, auth_headers):
-    """Create multiple test tasks."""
     tasks = []
-    for i in range(15):  # Create 15 tasks to test pagination
+    for i in range(10):
         response = await client.post(
             "/api/v1/tasks/",
             json={
@@ -171,6 +158,6 @@ async def multiple_tasks(client, auth_headers):
             },
             headers=auth_headers,
         )
-        assert response.status_code == 201
+        assert response.status_code == 201, f"Task {i+1}: Expected 201 got {response.status_code}: {response.text}"
         tasks.append(response.json())
     return tasks

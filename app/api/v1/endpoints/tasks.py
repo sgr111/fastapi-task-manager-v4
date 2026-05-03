@@ -4,11 +4,10 @@ from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-
+from app.services.task_service import get_task_by_id_any_user
 from app.api.v1.dependencies import get_current_user
 from app.core.config import settings
+from app.core.limiter import limiter
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.task import (
@@ -30,9 +29,6 @@ from app.utils.pagination import calculate_pagination
 
 router = APIRouter(prefix="/tasks", tags=["Tasks"])
 
-# Rate limiter instance
-limiter = Limiter(key_func=get_remote_address)
-
 
 @router.get(
     "/",
@@ -41,29 +37,18 @@ limiter = Limiter(key_func=get_remote_address)
 )
 @limiter.limit(settings.RATE_LIMIT_TASKS_READ)
 async def list_tasks(
-    request: Request,  # Required for limiter - MUST BE FIRST
-    skip: int = Query(0, ge=0, description="Number of items to skip"),
+    request: Request,
+    skip: int = Query(0, ge=0),
     limit: int = Query(
         settings.DEFAULT_PAGE_SIZE,
-        ge=1,
-        le=settings.MAX_PAGE_SIZE,
-        description="Number of items to return",
+        ge=1        
     ),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Get all active tasks for the logged-in user with pagination.
-    
-    **Parameters:**
-    - skip: How many tasks to skip (default 0)
-    - limit: How many tasks to return (default 10, max 100)
-    
-    **Soft deletes:** Deleted tasks are excluded automatically
-    """
+    limit = min(limit, settings.MAX_PAGE_SIZE)
     tasks, total = await get_tasks_by_user(db, current_user.id, skip, limit)
     pagination = calculate_pagination(total, skip, limit)
-    
     return {
         "items": tasks,
         **pagination,
@@ -78,30 +63,11 @@ async def list_tasks(
 )
 @limiter.limit(settings.RATE_LIMIT_TASKS_WRITE)
 async def create_new_task(
-    request: Request,  # Required for limiter - MUST BE FIRST
+    request: Request,
     task_data: TaskCreate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Create a new task.
-    
-    **Fields:**
-    - title: 3-255 characters (required)
-    - description: Optional, max 2000 characters
-    - status: todo, in_progress, done, cancelled (optional)
-    - priority: low, medium, high, urgent (optional)
-    - metadata: Optional JSONB object (e.g., tags, priority)
-    
-    **Example metadata:**
-    ```json
-    {
-        "tags": ["urgent", "work"],
-        "priority": "high",
-        "category": "backend"
-    }
-    ```
-    """
     return await create_task(db, task_data, current_user.id)
 
 
@@ -112,15 +78,16 @@ async def create_new_task(
 )
 @limiter.limit(settings.RATE_LIMIT_TASKS_READ)
 async def get_task(
-    request: Request,  # Required for limiter - MUST BE FIRST
+    request: Request,
     task_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Get a single task by ID (must be your own task)."""
-    task = await get_task_by_id(db, task_id, current_user.id)
+    task = await get_task_by_id_any_user(db, task_id)
     if not task or task.is_deleted():
         raise HTTPException(status_code=404, detail="Task not found")
+    if task.owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized")
     return task
 
 
@@ -131,28 +98,17 @@ async def get_task(
 )
 @limiter.limit(settings.RATE_LIMIT_TASKS_WRITE)
 async def update_existing_task(
-    request: Request,  # Required for limiter - MUST BE FIRST
+    request: Request,
     task_id: int,
     task_data: TaskUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Update a task (partial updates supported).
-    
-    **Supported fields:**
-    - title: Update task title
-    - description: Update task description
-    - status: Update task status
-    - priority: Update task priority
-    - metadata: Update custom metadata
-    
-    Unchanged fields can be omitted.
-    """
     task = await get_task_by_id(db, task_id, current_user.id)
     if not task or task.is_deleted():
         raise HTTPException(status_code=404, detail="Task not found")
-    return await update_task(db, task, task_data)
+    # FIX: pass current_user.id to update_task
+    return await update_task(db, task, task_data, current_user.id)
 
 
 @router.delete(
@@ -162,16 +118,11 @@ async def update_existing_task(
 )
 @limiter.limit(settings.RATE_LIMIT_TASKS_WRITE)
 async def delete_existing_task(
-    request: Request,  # Required for limiter - MUST BE FIRST
+    request: Request,
     task_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Delete a task using soft delete (marked as deleted, not removed from DB).
-    
-    **Note:** Task is hidden from list but audit logs are retained.
-    """
     task = await get_task_by_id(db, task_id, current_user.id)
     if not task or task.is_deleted():
         raise HTTPException(status_code=404, detail="Task not found")
@@ -185,24 +136,12 @@ async def delete_existing_task(
 )
 @limiter.limit(settings.RATE_LIMIT_TASKS_READ)
 async def get_task_audit_log(
-    request: Request,  # Required for limiter - MUST BE FIRST
+    request: Request,
     task_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Get the complete audit log (CDC) for a task.
-    
-    Shows:
-    - All changes (CREATE, UPDATE, DELETE)
-    - Old and new values
-    - Who made the change
-    - When it was changed
-    
-    **Use case:** Track task history and changes for compliance/debugging.
-    """
     task = await get_task_by_id(db, task_id, current_user.id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    
     return await get_audit_logs_for_task(db, task_id)

@@ -1,22 +1,34 @@
 """Task service with business logic."""
-
-from datetime import datetime
-from sqlalchemy import and_, or_
+from typing import Optional
+from datetime import datetime, timezone
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 
 from app.models.task import Task, AuditLog
-from app.models.user import User
 from app.schemas.task import TaskCreate, TaskUpdate
 from app.utils.pagination import calculate_pagination
 
 
+def _safe_metadata(value) -> Optional[dict]:
+    """Safely convert metadata to dict."""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    try:
+        return dict(value)
+    except Exception:
+        return None
+
+
+from typing import Optional
+
+
 async def create_task(db: AsyncSession, task_create: TaskCreate, user_id: int) -> Task:
-    """Create a new task."""
-    # Ensure metadata is a dict, not a SQLAlchemy object
-    metadata = task_create.metadata if isinstance(task_create.metadata, dict) else None
-    
+    """Create a new task with audit log."""
+    metadata = _safe_metadata(task_create.metadata)
+
     task = Task(
         title=task_create.title,
         description=task_create.description,
@@ -25,8 +37,7 @@ async def create_task(db: AsyncSession, task_create: TaskCreate, user_id: int) -
     )
     db.add(task)
     await db.flush()
-    
-    # Create audit log for creation
+
     audit_log = AuditLog(
         task_id=task.id,
         action="CREATE",
@@ -38,24 +49,14 @@ async def create_task(db: AsyncSession, task_create: TaskCreate, user_id: int) -
         changed_by=user_id,
     )
     db.add(audit_log)
-    await db.flush()
-    
-    # Don't refresh - keep metadata as dict
-    # Manually set created_at and updated_at if needed
-    if task.created_at is None:
-        task.created_at = datetime.utcnow()
-    if task.updated_at is None:
-        task.updated_at = datetime.utcnow()
-    
-    # Ensure metadata_ is a dict
-    if task.metadata_ is None:
-        task.metadata_ = {}
-    elif not isinstance(task.metadata_, dict):
-        try:
-            task.metadata_ = dict(task.metadata_)
-        except:
-            task.metadata_ = {}
-    
+    # FIX: commit so data is persisted
+    await db.commit()
+    await db.refresh(task)
+
+    # FIX: ensure metadata_ is a plain dict after refresh
+    if task.metadata_ is not None and not isinstance(task.metadata_, dict):
+        task.metadata_ = _safe_metadata(task.metadata_)
+
     return task
 
 
@@ -68,19 +69,27 @@ async def get_task_by_id(db: AsyncSession, task_id: int, user_id: int) -> Task |
     )
     return result.scalar_one_or_none()
 
+async def get_task_by_id_any_user(db: AsyncSession, task_id: int) -> Task | None:
+    """Get task by ID regardless of owner - used to distinguish 403 vs 404."""
+    result = await db.execute(
+        select(Task)
+        .where(Task.id == task_id)
+        .options(selectinload(Task.audit_logs))
+    )
+    return result.scalar_one_or_none()
 
 async def get_tasks_by_user(
     db: AsyncSession, user_id: int, skip: int = 0, limit: int = 10
 ) -> tuple[list[Task], int]:
-    """Get all active (non-deleted) tasks for a user."""
-    # Get total count
+    """Get all active (non-deleted) tasks for a user with count."""
+    # Get total count efficiently
     count_result = await db.execute(
-        select(Task).where(
+        select(func.count(Task.id)).where(
             and_(Task.owner_id == user_id, Task.deleted_at.is_(None))
         )
     )
-    total = len(count_result.scalars().all())
-    
+    total = count_result.scalar_one()
+
     # Get paginated results
     result = await db.execute(
         select(Task)
@@ -97,32 +106,39 @@ async def get_tasks_by_user(
 async def update_task(
     db: AsyncSession, task: Task, task_update: TaskUpdate, user_id: int
 ) -> Task:
-    """Update a task (partial updates supported)."""
+    """Update a task (partial updates supported) with audit log."""
     old_values = {
         "title": task.title,
         "description": task.description,
         "is_completed": task.is_completed,
-        "metadata": task.metadata_,
+        "metadata": _safe_metadata(task.metadata_),
     }
-    
-    # Update only provided fields
+
     update_data = task_update.model_dump(exclude_unset=True)
     for field, value in update_data.items():
         if field == "metadata":
             setattr(task, "metadata_", value)
+
+        elif field == "status":
+            current_metadata = _safe_metadata(task.metadata_) or {}
+            current_metadata["__status"] = value
+            task.metadata_ = current_metadata
+        elif field == "priority":
+            current_metadata = _safe_metadata(task.metadata_) or {}
+            current_metadata["__priority"] = value
+            task.metadata_ = current_metadata
         else:
             setattr(task, field, value)
-    
+
     await db.flush()
-    
+
     new_values = {
         "title": task.title,
         "description": task.description,
         "is_completed": task.is_completed,
-        "metadata": task.metadata_,
+        "metadata": _safe_metadata(task.metadata_),
     }
-    
-    # Create audit log for update
+
     audit_log = AuditLog(
         task_id=task.id,
         action="UPDATE",
@@ -131,22 +147,25 @@ async def update_task(
         changed_by=user_id,
     )
     db.add(audit_log)
-    await db.flush()
+    await db.commit()
     await db.refresh(task)
+
+    if task.metadata_ is not None and not isinstance(task.metadata_, dict):
+        task.metadata_ = _safe_metadata(task.metadata_)
+
     return task
 
 
 async def delete_task(db: AsyncSession, task: Task) -> None:
-    """Soft delete a task."""
+    """Soft delete a task with audit log."""
     old_values = {
         "title": task.title,
         "deleted_at": None,
     }
-    
-    task.soft_delete()  # Mark as deleted
+
+    task.soft_delete()
     await db.flush()
-    
-    # Create audit log for deletion
+
     audit_log = AuditLog(
         task_id=task.id,
         action="DELETE",
@@ -155,11 +174,11 @@ async def delete_task(db: AsyncSession, task: Task) -> None:
         changed_by=task.owner_id,
     )
     db.add(audit_log)
-    await db.flush()
+    await db.commit()
 
 
 async def get_audit_logs_for_task(db: AsyncSession, task_id: int) -> list[AuditLog]:
-    """Get all audit logs for a task."""
+    """Get all audit logs for a task ordered by time."""
     result = await db.execute(
         select(AuditLog)
         .where(AuditLog.task_id == task_id)

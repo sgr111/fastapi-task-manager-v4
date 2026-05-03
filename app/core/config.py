@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     RATE_LIMIT_ENABLED: bool = True
     # Format: "requests/period" (e.g., "60/minute", "1000/hour")
     RATE_LIMIT_AUTH: str = "30/minute"        # Login/Register
-    RATE_LIMIT_TASKS_READ: str = "100/minute"  # List/Get tasks
+    RATE_LIMIT_TASKS_READ: str = "10/minute"  # List/Get tasks
     RATE_LIMIT_TASKS_WRITE: str = "30/minute"  # Create/Update/Delete tasks
     
     # ===== PAGINATION =====

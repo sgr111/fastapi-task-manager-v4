@@ -3,6 +3,7 @@
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
 from datetime import datetime
+from pydantic import field_validator
 
 
 class UserBase(BaseModel):
@@ -14,6 +15,15 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     """Schema for creating a new user."""
     password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("password")
+    @classmethod
+    def password_strength(cls, v):
+        if not any(c.isupper() for c in v):
+            raise ValueError("Password must contain at least one uppercase letter")
+        if not any(c.isdigit() for c in v):
+            raise ValueError("Password must contain at least one number")
+        return v
 
     model_config = {
         "json_schema_extra": {

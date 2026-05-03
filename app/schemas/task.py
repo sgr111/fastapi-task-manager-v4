@@ -2,10 +2,10 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 from enum import Enum
+from pydantic import model_validator
 
 
 class TaskStatus(str, Enum):
-    """Task status enumeration."""
     TODO = "todo"
     IN_PROGRESS = "in_progress"
     DONE = "done"
@@ -13,7 +13,6 @@ class TaskStatus(str, Enum):
 
 
 class TaskPriority(str, Enum):
-    """Task priority enumeration."""
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -21,18 +20,16 @@ class TaskPriority(str, Enum):
 
 
 class TaskBase(BaseModel):
-    """Base task schema with common fields."""
     title: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = Field(None, max_length=5000)
     metadata: Optional[dict] = Field(None, description="Flexible JSONB metadata")
 
 
 class TaskCreate(BaseModel):
-    """Schema for creating a new task."""
     title: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = Field(None, max_length=5000)
-    status: Optional[str] = None  # Not used in model but accepted
-    priority: Optional[str] = None  # Not used in model but accepted
+    status: Optional[str] = None
+    priority: Optional[str] = None
     metadata: Optional[dict] = Field(None, description="Flexible JSONB metadata")
 
     model_config = {
@@ -47,12 +44,11 @@ class TaskCreate(BaseModel):
 
 
 class TaskUpdate(BaseModel):
-    """Schema for updating a task."""
     title: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = Field(None, max_length=5000)
     is_completed: Optional[bool] = None
-    status: Optional[str] = None  # Not used but accepted for compatibility
-    priority: Optional[str] = None  # Not used but accepted for compatibility
+    status: Optional[str] = None
+    priority: Optional[str] = None
     metadata: Optional[dict] = Field(None, description="Flexible JSONB metadata")
 
     model_config = {
@@ -67,13 +63,14 @@ class TaskUpdate(BaseModel):
 
 
 class TaskResponse(BaseModel):
-    """Schema for task response."""
     id: int
     title: str
     description: Optional[str]
     is_completed: bool
-    status: Optional[str] = "todo"  # For API compatibility
-    priority: Optional[str] = "medium"  # For API compatibility
+    status: Optional[str] = "todo"
+    priority: Optional[str] = "medium"
+    # FIX: alias metadata_ model field to metadata in response
+    metadata: Optional[dict] = Field(None, serialization_alias="metadata", alias="metadata_")
     owner_id: int = Field(..., alias="user_id")
     deleted_at: Optional[datetime]
     created_at: datetime
@@ -84,14 +81,25 @@ class TaskResponse(BaseModel):
         "populate_by_name": True,
     }
 
+    @model_validator(mode="before")
+    @classmethod
+    def extract_status_priority(cls, data):
+        if hasattr(data, "metadata_"):
+            meta = data.metadata_
+            if isinstance(meta, dict):
+                if "__status" in meta:
+                    data.__dict__["status"] = meta["__status"]
+                if "__priority" in meta:
+                    data.__dict__["priority"] = meta["__priority"]
+        return data
+
 
 class PaginatedTaskResponse(BaseModel):
-    """Schema for paginated task response."""
     items: List[TaskResponse]
     total: int
     skip: int
     limit: int
-    has_more: bool
+    has_more: bool  # FIX: required field included
 
     model_config = {
         "json_schema_extra": {
@@ -100,33 +108,21 @@ class PaginatedTaskResponse(BaseModel):
                 "total": 10,
                 "skip": 0,
                 "limit": 10,
-                "has_more": False
+                "has_more": False,
             }
         }
     }
 
 
 class AuditLogResponse(BaseModel):
-    """Schema for audit log response."""
     id: int
     task_id: int
     action: str
     old_values: Optional[dict] = None
     new_values: Optional[dict] = None
-    changed_by: int
+    changed_by: Optional[int] = None
     changed_at: datetime
 
     model_config = {
         "from_attributes": True,
-        "json_schema_extra": {
-            "example": {
-                "id": 1,
-                "task_id": 1,
-                "action": "CREATE",
-                "old_values": None,
-                "new_values": {"title": "New Task"},
-                "changed_by": 1,
-                "changed_at": "2024-04-01T10:00:00"
-            }
-        }
     }
