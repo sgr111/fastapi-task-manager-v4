@@ -12,15 +12,19 @@ A production-grade REST API for task management built with FastAPI, PostgreSQL, 
 
 ## Features
 
-- **JWT Authentication** — Access tokens (30 min) + Refresh tokens (7 days) with unique JTI per token
-- **Task CRUD** — Create, read, update, soft delete tasks with full pagination
-- **JSONB Metadata** — Flexible schema-less data stored per task in PostgreSQL JSONB
-- **Soft Deletes** — Tasks are never permanently deleted; deleted_at timestamp marks them hidden
-- **Change Data Capture** — Every CREATE, UPDATE, DELETE is recorded in audit_logs table
-- **Rate Limiting** — Per-user rate limits via slowapi (30 writes/min, 100 reads/min, 30 auth/min)
-- **Password Validation** — Enforces uppercase, digit, and minimum length requirements
-- **Alembic Migrations** — Version-controlled database schema
-- **Async Throughout** — asyncpg + SQLAlchemy async + httpx
+| Feature | Details |
+|---|---|
+| **Pagination** | skip/limit with `has_more` field — silently clamps limit to MAX_PAGE_SIZE |
+| **Soft Deletes** | `deleted_at` timestamp — data preserved, audit log retained after deletion |
+| **JSONB Metadata** | Flexible per-task schema-less data stored in PostgreSQL JSONB column |
+| **CDC Audit Logs** | Every CREATE, UPDATE, DELETE recorded with old/new values and `changed_by` |
+| **JWT Auth** | Access tokens (30 min) + Refresh tokens (7 days) with unique JTI per token |
+| **Rate Limiting** | Per-user slowapi limits — 30 writes/min, 100 reads/min, 30 auth/min |
+| **Alembic Migrations** | Version-controlled schema — users, tasks (JSONB), audit_logs tables |
+| **Async Throughout** | asyncpg + SQLAlchemy 2.0 async + httpx — non-blocking I/O at every layer |
+| **GitHub Actions CI** | 29 unit tests run automatically on every push with PostgreSQL service |
+| **bcrypt Hashing** | Passwords hashed with configurable rounds — never stored in plain text |
+| **Password Validation** | Pydantic `field_validator` enforces uppercase + digit requirements |
 
 ---
 
