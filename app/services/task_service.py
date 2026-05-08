@@ -79,21 +79,40 @@ async def get_task_by_id_any_user(db: AsyncSession, task_id: int) -> Task | None
     return result.scalar_one_or_none()
 
 async def get_tasks_by_user(
-    db: AsyncSession, user_id: int, skip: int = 0, limit: int = 10
+    db: AsyncSession,
+    user_id: int,
+    skip: int = 0,
+    limit: int = 10,
+    is_completed: Optional[bool] = None,
+    search: Optional[str] = None,
 ) -> tuple[list[Task], int]:
-    """Get all active (non-deleted) tasks for a user with count."""
-    # Get total count efficiently
+    """Get all active (non-deleted) tasks for a user with optional filtering."""
+    from sqlalchemy import func
+
+    # Base filter — always exclude deleted and filter by owner
+    filters = [
+        Task.owner_id == user_id,
+        Task.deleted_at.is_(None),
+    ]
+
+    # Optional: filter by completion status
+    if is_completed is not None:
+        filters.append(Task.is_completed == is_completed)
+
+    # Optional: search in title (case-insensitive)
+    if search:
+        filters.append(Task.title.ilike(f"%{search}%"))
+
+    # Count total matching records
     count_result = await db.execute(
-        select(func.count(Task.id)).where(
-            and_(Task.owner_id == user_id, Task.deleted_at.is_(None))
-        )
+        select(func.count(Task.id)).where(and_(*filters))
     )
     total = count_result.scalar_one()
 
     # Get paginated results
     result = await db.execute(
         select(Task)
-        .where(and_(Task.owner_id == user_id, Task.deleted_at.is_(None)))
+        .where(and_(*filters))
         .order_by(Task.created_at.desc())
         .offset(skip)
         .limit(limit)
@@ -101,7 +120,6 @@ async def get_tasks_by_user(
     )
     tasks = result.scalars().all()
     return tasks, total
-
 
 async def update_task(
     db: AsyncSession, task: Task, task_update: TaskUpdate, user_id: int

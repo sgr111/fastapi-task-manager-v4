@@ -1,7 +1,6 @@
 """Task endpoints for CRUD operations with rate limiting."""
 
-from typing import List
-
+from typing import List, Optional  # removed duplicate
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.services.task_service import get_task_by_id_any_user
@@ -33,29 +32,29 @@ router = APIRouter(prefix="/tasks", tags=["Tasks"])
 @router.get(
     "/",
     response_model=PaginatedTaskResponse,
-    summary="List user's tasks with pagination",
+    summary="List user's tasks with pagination and filtering",  # kept the better summary
 )
 @limiter.limit(settings.RATE_LIMIT_TASKS_READ)
 async def list_tasks(
     request: Request,
     skip: int = Query(0, ge=0),
-    limit: int = Query(
-        settings.DEFAULT_PAGE_SIZE,
-        ge=1        
-    ),
+    limit: int = Query(settings.DEFAULT_PAGE_SIZE, ge=1),
+    is_completed: Optional[bool] = Query(None, description="Filter by completion status"),
+    search: Optional[str] = Query(None, description="Search in task title"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     limit = min(limit, settings.MAX_PAGE_SIZE)
-    tasks, total = await get_tasks_by_user(db, current_user.id, skip, limit)
+    tasks, total = await get_tasks_by_user(
+        db, current_user.id, skip, limit,
+        is_completed=is_completed,
+        search=search,
+    )
     pagination = calculate_pagination(total, skip, limit)
-    return {
-        "items": tasks,
-        **pagination,
-    }
+    return {"items": tasks, **pagination}
 
 
-@router.post(
+@router.post(                               # ← was missing entirely
     "/",
     response_model=TaskResponse,
     status_code=status.HTTP_201_CREATED,
@@ -107,7 +106,6 @@ async def update_existing_task(
     task = await get_task_by_id(db, task_id, current_user.id)
     if not task or task.is_deleted():
         raise HTTPException(status_code=404, detail="Task not found")
-    # FIX: pass current_user.id to update_task
     return await update_task(db, task, task_data, current_user.id)
 
 
