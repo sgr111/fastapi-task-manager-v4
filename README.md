@@ -8,12 +8,6 @@
 
 A production-grade REST API for task management built with FastAPI, PostgreSQL, JWT authentication, JSONB metadata, soft deletes, Change Data Capture (CDC) audit logs, and rate limiting.
 
-![CI](https://github.com/sgr111/fastapi-task-manager-v4/actions/workflows/ci.yml/badge.svg)
-![Python](https://img.shields.io/badge/python-3.11-blue)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
-
 ## 🚀 Live Demo
 
 | | Link |
