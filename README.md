@@ -8,7 +8,7 @@
 
 A production-grade REST API for task management built with FastAPI, PostgreSQL, JWT authentication, JSONB metadata, soft deletes, Change Data Capture (CDC) audit logs, and rate limiting.
 
-## 🚀 Live Demo
+## Live Demo
 
 | | Link |
 |---|---|
